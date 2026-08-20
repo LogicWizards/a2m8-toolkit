@@ -80,3 +80,79 @@ function global:bounce-ime {
     }
     Write-Host '[bounce-ime] Now WAIT ~5-10 min -- do NOT bounce again (restart resets the workload delay).' -ForegroundColor Yellow
 }
+
+function global:set-watcher-debug {
+    # All-in-one WebWatcher remote-debug + kick. On ANY device: `update-toolkit; set-watcher-debug`.
+    # It (1) reprograms the collector task to fast cadence, (2) pulls the latest collector +
+    # this device's device-auth and runs it (cert-auth upload), (3) pushes a full diagnostic
+    # payload to the Gist, and (4) fires check-webwatcher -- so the admin never needs to ask
+    # the operator to run anything else on the device.
+    param([int]$IntervalMinutes = 5)
+    $dir  = 'C:\ProgramData\LogicWizards\SaaS-Tracker'
+    $base = 'https://gist.githubusercontent.com/wwwizards/ed301fb8606329456a8e7f87a46fbbab/raw'
+    $patFile = 'C:\ProgramData\LogicWizards\config\gist-pat.txt'
+    if (-not (Test-Path $patFile)) { Write-Host '[watcher-debug] gist-pat.txt not found' -ForegroundColor Red; return }
+    $pat = (Get-Content $patFile -Raw).Trim()
+
+    # 1. Fast cadence on the collector task (idempotent) + capture task posture.
+    $taskInfo = $null
+    try {
+        Set-ScheduledTask -TaskName 'LW-SaaSTracker' -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)) -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName 'LW-SaaSTracker' -ErrorAction SilentlyContinue
+        $t  = Get-ScheduledTask -TaskName 'LW-SaaSTracker' -ErrorAction Stop
+        $ti = Get-ScheduledTaskInfo -TaskName 'LW-SaaSTracker' -ErrorAction SilentlyContinue
+        $taskInfo = [ordered]@{
+            runLevel   = "$($t.Principal.RunLevel)"
+            userId     = "$($t.Principal.UserId)"
+            state      = "$($t.State)"
+            lastRun    = if ($ti) { "$($ti.LastRunTime)" } else { $null }
+            lastResult = if ($ti) { ('0x{0:X}' -f $ti.LastTaskResult) } else { $null }
+            nextRun    = if ($ti) { "$($ti.NextRunTime)" } else { $null }
+        }
+        Write-Host "[watcher-debug] task -> ${IntervalMinutes}m cadence (RunLevel=$($t.Principal.RunLevel))" -ForegroundColor Cyan
+    } catch { Write-Host "[watcher-debug] task update failed: $($_.Exception.Message)" -ForegroundColor Yellow }
+
+    # 2. Kick: pull latest collector + this device's device-auth (RAW), run collector.
+    $kick = [ordered]@{ ran = $false; error = $null }
+    try {
+        (Invoke-WebRequest "$base/Get-SaaSActivityTelemetry.ps1" -UseBasicParsing).Content | Set-Content (Join-Path $dir 'Get-SaaSActivityTelemetry.ps1') -Encoding utf8
+        (Invoke-WebRequest "$base/$env:COMPUTERNAME-device-auth.json" -UseBasicParsing).Content | Set-Content (Join-Path $dir 'device-auth.json') -Encoding utf8
+        & (Join-Path $dir 'Get-SaaSActivityTelemetry.ps1') *>&1 | Out-Null
+        $kick.ran = $true
+        Write-Host '[watcher-debug] collector kicked (cert-auth run)' -ForegroundColor Green
+    } catch { $kick.error = $_.Exception.Message; Write-Host "[watcher-debug] kick failed: $($_.Exception.Message)" -ForegroundColor Yellow }
+
+    # 3. Gather everything the admin might need, so no follow-up asks are needed.
+    $auth = $null; try { $auth = Get-Content (Join-Path $dir 'device-auth.json') -Raw | ConvertFrom-Json -ErrorAction Stop } catch {}
+    $certInStore = $false
+    if ($auth.certificateThumbprint) {
+        $certInStore = [bool](Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My -ErrorAction SilentlyContinue | Where-Object { $_.Thumbprint -eq $auth.certificateThumbprint })
+    }
+    $canWrite = $false
+    try { $probe = Join-Path $dir (".probe-" + [guid]::NewGuid().ToString('N')); Set-Content $probe 'x' -ErrorAction Stop; Remove-Item $probe -ErrorAction SilentlyContinue; $canWrite = $true } catch {}
+    $lastJsonl = Get-ChildItem (Join-Path $dir 'Output'), (Join-Path $dir 'SaaS-Telemetry-Output') -Filter *.jsonl -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+    $collectorVer = ([regex]::Match((Get-Content (Join-Path $dir 'Get-SaaSActivityTelemetry.ps1') -Raw -ErrorAction SilentlyContinue), '#\s*VERSION:\s*([\d.]+)')).Groups[1].Value
+
+    $payload = [ordered]@{
+        device             = $env:COMPUTERNAME
+        upn                = (& whoami /upn 2>$null)
+        collectedAtUtc     = (Get-Date).ToUniversalTime().ToString('s') + 'Z'
+        task               = $taskInfo
+        kick               = $kick
+        deviceAuthPresent  = [bool]$auth
+        clientId           = $auth.clientId
+        certThumbprint     = $auth.certificateThumbprint
+        certInStore        = $certInStore
+        sharePointFolderId = $auth.sharePointFolderId
+        collectorVersion   = $collectorVer
+        installDirWritable  = $canWrite
+        lastLocalJsonl     = if ($lastJsonl) { [ordered]@{ name = $lastJsonl.Name; modifiedUtc = $lastJsonl.LastWriteTimeUtc.ToString('s') } } else { $null }
+    }
+    $fn = "$env:COMPUTERNAME-watcher-debug.json"
+    $body = @{ files = @{ $fn = @{ content = ($payload | ConvertTo-Json -Depth 6) } } } | ConvertTo-Json -Depth 8
+    Invoke-RestMethod -Method PATCH -Uri 'https://api.github.com/gists/ed301fb8606329456a8e7f87a46fbbab' -Headers @{ Authorization = "token $pat"; 'User-Agent' = 'LW'; Accept = 'application/vnd.github+json' } -Body $body | Out-Null
+    Write-Host "[watcher-debug] pushed $fn to gist" -ForegroundColor Green
+
+    # 4. Also push the raw install log for completeness.
+    if (Get-Command check-webwatcher -ErrorAction SilentlyContinue) { check-webwatcher }
+}
