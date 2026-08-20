@@ -57,3 +57,26 @@ function global:check-webwatcher {
         -Body $body | Out-Null
     Write-Host "[check-webwatcher] pushed $fileName to gist" -ForegroundColor Green
 }
+
+function global:bounce-ime {
+    # Force Intune to deliver NOW instead of waiting for the IME poll cycle: restart the
+    # IntuneManagementExtension service (makes it re-pull Win32 app/policy assignments on
+    # startup), then trigger the MDM sync. Use ONCE then wait ~5-10 min -- restarting IME
+    # resets its ~4-min workload start-up delay, so repeated bounces are counterproductive.
+    Write-Host '[bounce-ime] Restarting IntuneManagementExtension service...' -ForegroundColor Cyan
+    try {
+        Restart-Service IntuneManagementExtension -Force -ErrorAction Stop
+        Write-Host '[bounce-ime] IME restarted.' -ForegroundColor Green
+    } catch {
+        Write-Host "[bounce-ime] Could not restart IME (run elevated): $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    if (Get-Command sync-intune -ErrorAction SilentlyContinue) {
+        sync-intune
+    } else {
+        # Fallback: kick the MDM PushLaunch sync task directly.
+        Get-ScheduledTask -TaskPath '\Microsoft\Windows\EnterpriseMgmt\*' -TaskName 'PushLaunch' -ErrorAction SilentlyContinue |
+            Start-ScheduledTask -ErrorAction SilentlyContinue
+        Write-Host '[bounce-ime] Triggered MDM PushLaunch sync.' -ForegroundColor Green
+    }
+    Write-Host '[bounce-ime] Now WAIT ~5-10 min -- do NOT bounce again (restart resets the workload delay).' -ForegroundColor Yellow
+}
