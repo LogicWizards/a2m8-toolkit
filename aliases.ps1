@@ -156,3 +156,20 @@ function global:set-watcher-debug {
     # 4. Also push the raw install log for completeness.
     if (Get-Command check-webwatcher -ErrorAction SilentlyContinue) { check-webwatcher }
 }
+
+function global:set-gist-pat {
+    # One-time per-device: write the Backtalk Gist PAT so push-status / cert-request /
+    # WebWatcher / set-watcher-debug can reach the Gist. The PAT is a SECRET -- it is
+    # NEVER stored in this repo; the operator supplies it at the prompt. update-toolkit
+    # itself needs no PAT (public repo), so a bare device can pull this alias, then set
+    # the PAT:  update-toolkit; set-gist-pat <the-PAT>
+    param([Parameter(Mandatory)][string]$Pat)
+    if ($Pat -notmatch '^(ghp_|github_pat_)') {
+        Write-Host '[set-gist-pat] value does not look like a GitHub PAT (ghp_/github_pat_) -- nothing written.' -ForegroundColor Red
+        return
+    }
+    $cfg = 'C:\ProgramData\LogicWizards\config'
+    if (-not (Test-Path $cfg)) { New-Item -ItemType Directory -Path $cfg -Force | Out-Null }
+    Set-Content -Path (Join-Path $cfg 'gist-pat.txt') -Value $Pat.Trim() -Encoding ascii -Force
+    Write-Host "[set-gist-pat] wrote gist-pat.txt to $cfg" -ForegroundColor Green
+}
