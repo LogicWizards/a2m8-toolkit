@@ -19,7 +19,7 @@
 #     check-webwatcher    # then run any function defined here
 #------------------------------------------------------------------------------
 
-function check-webwatcher {
+function global:check-webwatcher {
     # Pushes the WebWatcher Win32 install log + relevant choco errors to the
     # Backtalk Gist as <device>-webwatcher-install.txt so an admin can read
     # (remotely) why a WebWatcher install/upgrade failed -- no Quick Assist
