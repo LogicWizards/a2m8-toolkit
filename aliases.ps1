@@ -173,3 +173,23 @@ function global:set-gist-pat {
     Set-Content -Path (Join-Path $cfg 'gist-pat.txt') -Value $Pat.Trim() -Encoding ascii -Force
     Write-Host "[set-gist-pat] wrote gist-pat.txt to $cfg" -ForegroundColor Green
 }
+
+function global:fix-watcher-task {
+    # The LW-SaaSTracker task defaults to RunLevel=Limited, so the collector -- running as
+    # the non-elevated user -- can't read the LocalMachine cert's PRIVATE KEY (only enumerate
+    # it) and can't reliably write to ProgramData, so cert-auth uploads fail silently on the
+    # schedule (only elevated manual runs work). Re-register with RunLevel=Highest so the task
+    # runs elevated in the user's context: keeps UPN + user identity AND gets key + write
+    # access. Run this once, elevated, on each device (or bake it into bootstrap-WebWatcher).
+    $t = Get-ScheduledTask -TaskName 'LW-SaaSTracker' -ErrorAction SilentlyContinue
+    if (-not $t) { Write-Host '[fix-watcher-task] LW-SaaSTracker not found -- run WebWatcher install first' -ForegroundColor Red; return }
+    try {
+        $prin = New-ScheduledTaskPrincipal -UserId $t.Principal.UserId -LogonType Interactive -RunLevel Highest
+        Set-ScheduledTask -TaskName 'LW-SaaSTracker' -Principal $prin -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName 'LW-SaaSTracker' -ErrorAction SilentlyContinue
+        $now = Get-ScheduledTask -TaskName 'LW-SaaSTracker'
+        Write-Host "[fix-watcher-task] RunLevel now: $($now.Principal.RunLevel) (was Limited) -- task will upload on its own from here" -ForegroundColor Green
+    } catch {
+        Write-Host "[fix-watcher-task] failed (run elevated): $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
