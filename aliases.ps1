@@ -116,7 +116,10 @@ function global:set-watcher-debug {
     $kick = [ordered]@{ ran = $false; error = $null }
     try {
         (Invoke-WebRequest "$base/Get-SaaSActivityTelemetry.ps1" -UseBasicParsing).Content | Set-Content (Join-Path $dir 'Get-SaaSActivityTelemetry.ps1') -Encoding utf8
-        (Invoke-WebRequest "$base/$env:COMPUTERNAME-device-auth.json" -UseBasicParsing).Content | Set-Content (Join-Path $dir 'device-auth.json') -Encoding utf8
+        # FIXED 260822: was fetching "$env:COMPUTERNAME-device-auth.json", which no admin script
+        # has ever published -- confirmed live. cert-response.json is the real file, and its
+        # shape (fixed same session) is now flat/field-compatible with device-auth.json verbatim.
+        (Invoke-WebRequest "$base/$env:COMPUTERNAME-cert-response.json" -UseBasicParsing).Content | Set-Content (Join-Path $dir 'device-auth.json') -Encoding utf8
         & (Join-Path $dir 'Get-SaaSActivityTelemetry.ps1') *>&1 | Out-Null
         $kick.ran = $true
         Write-Host '[watcher-debug] collector kicked (cert-auth run)' -ForegroundColor Green
